@@ -1,18 +1,18 @@
 /**
  * Generic database services for mongo.
  *
- * To disallow access to certain collectsion, provide
+ * To disallow access to certain collections, provide
  * middleware that filters /data/:collection
  */
-
-class DataServer {
-    constructor(connector,collections) {
+import Parser from './Parser.mjs';
+import express from 'express';
+export default class DataServer {
+    constructor(connector) {
         this.connector = connector;
-        this.parser = require('./Parser');
-        this.identifier = require('@metric-im/identifier');
+        this.parser = Parser;
     }
     routes() {
-        let router = require('express').Router();
+        let router = express.Router();
         router.get('/data/:collection/:item?',async(req,res)=>{
             try {
                 let result = await this.get(req.account.id,req.params.collection,req.params.item,req.query);
@@ -101,7 +101,7 @@ class DataServer {
             for (let o of body) {
                 if (!o._account) o._account = account.id;
                 writes.push({updateOne:{
-                    filter:{_id:(o._id||this.identifier.new)},
+                    filter:{_id:(o._id||this.connector.idForge.datedId())},
                     update:constructModifier(o),
                     upsert:true
                 }});
@@ -109,7 +109,7 @@ class DataServer {
             let result = await this.connector.db.collection(collection).bulkWrite(writes);
             return {upsertedCount:result.upsertedCount,modifiedCount:result.modifiedCount};
         } else {
-            let selector = {_id:body._id||id||this.identifier.new};
+            let selector = {_id:body._id||id||this.connector.idForge.datedId()};
             if (!body._account) body._account = account.id;
             let modifier = constructModifier(body);
             let options = {returnNewDocument:true,upsert:true};
@@ -129,5 +129,19 @@ class DataServer {
             return modifier;
         }
     }
+    /**
+     * Not in use yet... not tested
+     * @param col
+     * @param id
+     * @param user
+     * @returns {Promise<AggregationCursor<Document>>}
+     */
+    async trash(col,id,user='unknown') {
+        let result = await this.db.collection(col).aggregate([
+            {match:{_id:id}},
+            {project:{_user:user,o:"$ROOT",_created:new Date()}},
+            {$merge:{into:'trash',on:"_id"}}
+        ]);
+        return result;
+    }
 }
-module.exports = DataServer;

@@ -1,7 +1,7 @@
-let jsonic = require('jsonic');
-let moment = require('moment');
+import jsonic from 'jsonic';
+import moment from 'moment';
 
-class Parser {
+export default class Parser {
     static objectify(str) {
         let obj = jsonic(str);
         return fixRegex(obj);
@@ -60,6 +60,5 @@ class Parser {
         }
     }
 }
-module.exports = Parser;
 
 
