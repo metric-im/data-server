@@ -112,7 +112,7 @@ export default class DataServer {
             let selector = {_id:body._id||id||this.connector.idForge.datedId()};
             if (!body._account) body._account = account.id;
             let modifier = constructModifier(body);
-            let options = {returnNewDocument:true,upsert:true};
+            let options = {returnOriginal:false,returnDocument:"after",upsert:true};
             let result = await this.connector.db.collection(collection).findOneAndUpdate(selector,modifier,options);
             return result.value;
         }
