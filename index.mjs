@@ -6,9 +6,11 @@
  */
 import Parser from './Parser.mjs';
 import express from 'express';
-export default class DataServer {
+import Componentry from "@metric-im/componentry";
+
+export default class DataServer extends Componentry.Module {
     constructor(connector) {
-        this.connector = connector;
+        super(connector)
         this.parser = Parser;
     }
     routes() {

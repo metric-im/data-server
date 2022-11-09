@@ -9,6 +9,7 @@
   "author": "Michael Sprague",
   "license": "UNLICENSED",
   "dependencies": {
+    "@metric-im/componentry": "^1.1.1",
     "express": "^4.17.3",
     "jsonic": "^1.0.1",
     "moment": "^2.29.1"
