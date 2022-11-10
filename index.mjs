@@ -10,14 +10,14 @@ import Componentry from "@metric-im/componentry";
 
 export default class DataServer extends Componentry.Module {
     constructor(connector) {
-        super(connector)
+        super(connector,import.meta.url)
         this.parser = Parser;
     }
     routes() {
         let router = express.Router();
         router.get('/data/:collection/:item?',async(req,res)=>{
             try {
-                let result = await this.get(req.account,req.params.collection,req.params.item,req.query);
+                let result = await this.get(req.account.id,req.params.collection,req.params.item,req.query);
                 res.json(result);
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
@@ -25,7 +25,7 @@ export default class DataServer extends Componentry.Module {
         });
         router.put('/data/:collection/:item?',async(req,res)=>{
             try {
-                let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
+                let result = await this.put(req.account.id,req.params.collection,req.body,req.params.item);
                 res.json(result);
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
@@ -33,7 +33,7 @@ export default class DataServer extends Componentry.Module {
         });
         router.delete('/data/:collection/:item',async(req,res)=>{
             try {
-                await this.remove(req.account,req.params.collection,req.params.item);
+                await this.remove(req.account.id,req.params.collection,req.params.item);
                 res.status(204).send();
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
