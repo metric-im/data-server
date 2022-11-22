@@ -130,6 +130,9 @@ export default class DataServer extends Componentry.Module {
             let modifier = constructModifier(body);
             let options = {upsert:true,returnNewDocument:true};
             let result = await this.connector.db.collection(collection).findOneAndUpdate(selector,modifier,options);
+            if (!result.value && result.ok) {
+                result.value = await this.connector.db.collection(collection).findOne({_id:selector._id})
+            }
             return result.value;
         }
 
