@@ -57,6 +57,7 @@ export default class DataServer extends Componentry.Module {
     async get(account,collection,item,options={}) {
         let accounts = await this.connector.acl.get.read({user:account.userId},"account");
         accounts = accounts.map(a=>a._id.account);
+        if (account.super) accounts.push(account.id);
         let selector = {_account:{$in:accounts}};
         if (item) selector._id = item;
         if (options.where) Object.assign(selector,this.parser.objectify(options.where));
@@ -70,7 +71,7 @@ export default class DataServer extends Componentry.Module {
             if (options.limit && results.length >= options.limit) break;
             else results.push(record);
         }
-        return (item?results[0]:results);
+        return (item?results[0]||{}:results);
     }
 
     /**
@@ -103,8 +104,9 @@ export default class DataServer extends Componentry.Module {
      * @returns Object
      */
     async put(account,collection,body,id) {
-        let accounts = await this.connector.acl.get.read({user:account.userId},"account");
+        let accounts = await this.connector.acl.get.write({user:account.userId},"account");
         accounts = accounts.map(a=>a._id.account);
+        if (account.super) accounts.push(account.id);
         if (Array.isArray(body)) {
             if (body.length === 0) throw new Error("Empty data set");
             let writes = [];
