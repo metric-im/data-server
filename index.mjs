@@ -31,9 +31,11 @@ export default class DataServer extends Componentry.Module {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         });
-        router.delete('/data/:collection/:item',async(req,res)=>{
+        router.delete('/data/:collection/:ids',async(req,res)=>{
             try {
-                await this.remove(req.account,req.params.collection,req.params.item);
+                let access = await this.connector.acl.test.write({user:req.account.userId},{account:req.account.id});
+                if (!access && !req.account.super) return res.status(401).send({status:401,message:'not permitted'});
+                await this.remove(req.account,req.params.collection,req.params.ids.split(','));
                 res.status(204).send();
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
@@ -75,17 +77,19 @@ export default class DataServer extends Componentry.Module {
     }
 
     /**
-     * Remove the identified item from the collection. Item must belong to the
-     * give account.id
+     * Remove the identified item(s) from the collection. Item must belong to the
+     * session account.id and user must of write rights. A single id passed as
+     * a string is treated as ['id'];
      *
      * @param account context.
      * @param collection the name of the collection in which the item is declared
      * @param item item identifier
      */
-    async remove(account,collection,item) {
-        if (!item) throw new Error('no id provided');
-        let selector = {_account:account.id,_id:item};
-        await this.connector.db.collection(collection).deleteOne(selector);
+    async remove(account,collection,ids) {
+        if (!ids) throw new Error('no id provided');
+        if (typeof ids === 'string') ids = [ids];
+        let selector = {_account:account.id,_id:{$in:ids}};
+        await this.connector.db.collection(collection).deleteMany(selector);
     }
 
     /**
