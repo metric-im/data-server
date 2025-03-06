@@ -1,8 +1,16 @@
 /**
- * Generic database services for mongo.
+ * Generic database services for metric componentry.
  *
- * To disallow access to certain collections, provide
- * middleware that filters /data/:collection
+ * GET, PUT, DELETE /{collection}/{id}?options
+ *
+ * Use DataServer.Options() to modify the default handling of the DataServer class.
+ * * *include*: Array. If provided only named collections in the array are honored
+ * * *exclude*: Array. A collection named in the array is not honored.
+ * * *acl*: One of ACL constants. Indicates how to handle access control
+ * * *safeDelete*: Boolean. DELETE moves items into trash collection. Trash can be emptied.
+ *
+ * NOTE: access control is only enforced for web requests. Internal requests to get() or
+ * put() directly need to be cleared independently.
  */
 import Parser from './Parser.mjs';
 import express from 'express';
@@ -11,12 +19,51 @@ import Componentry from "@metric-im/componentry";
 export default class DataServer extends Componentry.Module {
     constructor(connector) {
         super(connector,import.meta.url)
+        this.options = {acl:DataServer.ACL.ACCOUNT,safeDelete:false};
         this.parser = Parser;
+        this.trashCollection = this.connector.db.collection('data_server_trash');
     }
+    static get ACL() {
+        return {NONE:0,ACCOUNT:1,USER:2};
+    }
+    static Options(options) {
+        return class DataServerOptions extends DataServer {
+            constructor(connector) {
+                super(connector);
+                this.options = options;
+            }
+        }
+    }
+
     routes() {
         let router = express.Router();
+        // If either include or exclude are defined, skip collections not implicitly or explicitly named
+        if (this.options.include || this.options.exclude) {
+            router.use('/data/:collection/:item?',async (req,res,next)=> {
+                if ((this.options.exclude?.includes(req.params.collection)) ||
+                    (!this.options.include?.includes(req.params.collection))) {
+                    res.status(401).send();
+                } else next();
+            })
+        }
+        // Test if the request has clearance
+        if (this.options.acl) {
+            router.use('/data/:collection/:item?',async (req,res,next)=> {
+                let level = 'read';
+                if (req.method==='PUT') level = 'write';
+                if (req.method==='DELETE') level = 'write';
+                if (this.options.acl===DataServer.ACL.ACCOUNT && !req.account.super) {
+                    req._acl = {level:level,where:{_account:req.account.id}};
+                }
+                next();
+            })
+        }
         router.get('/data/:collection/:item?',async(req,res)=>{
             try {
+                if (req._acl?.level) {
+                    let access = await this.connector.acl.test[req._acl.level]({user:req.account.userId},{account:req.account.id});
+                    if (!access && !req.account.super) return res.status(401).send({status:401,message:'not permitted'});
+                }
                 let result = await this.get(req.account,req.params.collection,req.params.item,req.query);
                 res.json(result);
             } catch(e) {
@@ -33,7 +80,7 @@ export default class DataServer extends Componentry.Module {
         });
         router.delete('/data/:collection/:ids',async(req,res)=>{
             try {
-                let access = await this.connector.acl.test.write({user:req.account.userId},{account:req.account.id});
+                let access = await this.connector.acl.test[req._acl.level]({user:req.account.userId},{account:req.account.id});
                 if (!access && !req.account.super) return res.status(401).send({status:401,message:'not permitted'});
                 await this.remove(req.account,req.params.collection,req.params.ids.split(','));
                 res.status(204).send();
