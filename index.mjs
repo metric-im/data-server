@@ -50,10 +50,13 @@ export default class DataServer extends Componentry.Module {
         if (this.options.acl) {
             router.use('/data/:collection/:item?',async (req,res,next)=> {
                 let level = 'read';
-                if (req.method==='PUT') level = 'write';
-                if (req.method==='DELETE') level = 'write';
-                if (this.options.acl===DataServer.ACL.ACCOUNT && !req.account.super) {
-                    req._acl = {level:level,where:{_account:req.account.id}};
+                if (req.method === 'PUT') level = 'write';
+                if (req.method === 'DELETE') level = 'write';
+                if (this.options.acl === DataServer.ACL.ACCOUNT) {
+                    let accounts = await this.connector.acl.get.read({user:req.account.userId},"account");
+                    accounts = accounts.map(a=>a._id.account);
+                    if (req.account.super) req.accounts.push(account.id);
+                    req._acl = {level:level,accounts:accounts};
                 }
                 next();
             })
@@ -97,17 +100,14 @@ export default class DataServer extends Componentry.Module {
      * When an item id is provided the results are provided as a single
      * object. If not, the results are provided in an array.
      *
-     * @param account provides context.
+     * @param account provides context. (Maybe no longer necessary as acl is only applied to web request)
      * @param collection the name of the collection to collect data from.
      * @param item the id (_id) of the item in the collection. (optional)
      * @param options options to limit, sort or format the results
      * @returns Object
      */
     async get(account,collection,item,options={}) {
-        let accounts = await this.connector.acl.get.read({user:account.userId},"account");
-        accounts = accounts.map(a=>a._id.account);
-        if (account.super) accounts.push(account.id);
-        let selector = {_account:{$in:accounts}};
+        let selector = {};
         if (item) selector._id = item;
         if (options.where) Object.assign(selector,this.parser.objectify(options.where));
         let sort = this.parser.sortify(options.sort);
