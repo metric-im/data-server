@@ -19,12 +19,9 @@ import Componentry from "@metric-im/componentry";
 export default class DataServer extends Componentry.Module {
     constructor(connector) {
         super(connector,import.meta.url)
-        this.options = {acl:DataServer.ACL.ACCOUNT,safeDelete:false};
+        this.options = {safeDelete:false,exclude:["user"]};
         this.parser = Parser;
         this.trashCollection = this.connector.db.collection('data_server_trash');
-    }
-    static get ACL() {
-        return {NONE:0,ACCOUNT:1,USER:2};
     }
     static Options(options) {
         return class DataServerOptions extends DataServer {
@@ -46,35 +43,68 @@ export default class DataServer extends Componentry.Module {
                 } else next();
             })
         }
-        // Test if the request has clearance
-        if (this.options.acl) {
-            router.use('/data/:collection/:item?',async (req,res,next)=> {
-                let level = 'read';
-                if (req.method === 'PUT') level = 'write';
-                if (req.method === 'DELETE') level = 'write';
-                if (this.options.acl === DataServer.ACL.ACCOUNT) {
-                    let accounts = await this.connector.acl.get.read({user:req.account.userId},"account");
-                    accounts = accounts.map(a=>a._id.account);
-                    if (req.account.super) req.accounts.push(account.id);
-                    req._acl = {level:level,accounts:accounts};
+        router.use('/data/:collection/:item?',async (req,res,next)=> {
+            let level = 'read';
+            if (req.method === 'PUT') level = 'write';
+            if (req.method === 'DELETE') level = this.options.safeDelete ? 'create' : 'owner';
+            let availableAccounts = await this.connector.acl.get[level]({user: req.account.userId}, 'account');
+            req._availableAccounts = availableAccounts.map(a=>a._id.account);
+            next();
+        })
+        router.get('/data/account/:item?',async (req,res,next)=> {
+            try {
+                let selector = {};
+                if (req.params.item) {
+                    if (!req.account.super && !req._availableAccounts.includes(req.params.item)) return res.status(401).send();
+                    selector._id = req.params.item;
+                } else if (!req.account.super) {
+                    selector._id = {$in:req._availableAccounts};
                 }
-                next();
-            })
-        }
+                if (req.query.where) Object.assign(selector,this.parser.objectify(req.query.where));
+                let sort = (req.query.sort)?this.parser.sortify(req.query.sort):{_id:1};
+                let results = await this.connector.db.collection(collection).find(selector).collation({ locale:"en_US", strength:2}).sort(sort).toArray();
+                return (req.params.item?results[0]||{}:results);
+            } catch(e) {
+                res.status(e.status||500).json({status:"error",message:e.message});
+            }
+        })
+        router.put('/data/account/:item?',async (req,res)=> {
+            try {
+                res.status(500).json({status:"error",message:"Not implemented. Use account server."});
+            } catch(e) {
+                res.status(e.status||500).json({status:"error",message:e.message});
+            }
+        })
+        router.delete('/data/account/:item?',async (req,res)=> {
+            try {
+                res.status(500).json({status:"error",message:"Not implemented. Use account server."});
+            } catch(e) {
+                res.status(e.status||500).json({status:"error",message:e.message});
+            }
+        })
         router.get('/data/:collection/:item?',async(req,res)=>{
             try {
-                if (req._acl?.level) {
-                    let access = await this.connector.acl.test[req._acl.level]({user:req.account.userId},{account:req.account.id});
-                    if (!access && !req.account.super) return res.status(401).send({status:401,message:'not permitted'});
+                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
+                let selector = {_account:req.account.id};
+                if (req.params.item) selector._id = req.params.item;
+                if (req.query.where) Object.assign(selector,this.parser.objectify(req.query.where));
+                let sort = (req.query.sort)?this.parser.sortify(req.query.sort):{_id:1};
+                let results = [];
+                let cursor = this.options.nocase?
+                    await this.connector.db.collection(req.params.collection).find(selector).collation({ locale:"en_US", strength:2}).sort(sort):
+                    await this.connector.db.collection(req.params.collection).find(selector).sort(sort)
+                for await (let record of cursor) {
+                    if (this.options.limit && results.length >= this.options.limit) break;
+                    else results.push(record);
                 }
-                let result = await this.get(req.account,req.params.collection,req.params.item,req.query);
-                res.json(result);
+                return (req.params.item?results[0]||{}:results);
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         });
         router.put('/data/:collection/:item?',async(req,res)=>{
             try {
+                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
                 let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
                 res.json(result);
             } catch(e) {
@@ -83,8 +113,7 @@ export default class DataServer extends Componentry.Module {
         });
         router.delete('/data/:collection/:ids',async(req,res)=>{
             try {
-                let access = await this.connector.acl.test[req._acl.level]({user:req.account.userId},{account:req.account.id});
-                if (!access && !req.account.super) return res.status(401).send({status:401,message:'not permitted'});
+                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
                 await this.remove(req.account,req.params.collection,req.params.ids.split(','));
                 res.status(204).send();
             } catch(e) {
@@ -95,6 +124,8 @@ export default class DataServer extends Componentry.Module {
     }
 
     /**
+     * DEPRECATED: Not used.
+     *
      * Query collections in the database.
      *
      * When an item id is provided the results are provided as a single
@@ -125,7 +156,7 @@ export default class DataServer extends Componentry.Module {
 
     /**
      * Remove the identified item(s) from the collection. Item must belong to the
-     * session account.id and user must of write rights. A single id passed as
+     * session account.id and user must have write rights. A single id passed as
      * a string is treated as ['id'];
      *
      * @param account context.
