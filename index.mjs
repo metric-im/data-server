@@ -15,13 +15,14 @@
 import Parser from './Parser.mjs';
 import express from 'express';
 import Componentry from "@metric-im/componentry";
+import Trash from "./Trash.mjs";
 
 export default class DataServer extends Componentry.Module {
     constructor(connector) {
         super(connector,import.meta.url)
         this.options = {safeDelete:false,exclude:["user"]};
         this.parser = Parser;
-        this.trashCollection = this.connector.db.collection('data_server_trash');
+        this.trash = new Trash(this.connector);
     }
     static Options(options) {
         return class DataServerOptions extends DataServer {
@@ -51,6 +52,7 @@ export default class DataServer extends Componentry.Module {
             req._availableAccounts = availableAccounts.map(a=>a._id.account);
             next();
         })
+        router.use(this.trash.routes());
         router.get('/data/account/:item?',async (req,res,next)=> {
             try {
                 let selector = {};
@@ -167,7 +169,11 @@ export default class DataServer extends Componentry.Module {
         if (!ids) throw new Error('no id provided');
         if (typeof ids === 'string') ids = [ids];
         let selector = {_account:account.id,_id:{$in:ids}};
-        await this.connector.db.collection(collection).deleteMany(selector);
+        if (this.options.safeDelete) {
+            await this.trash.put(account, collection, ids)
+        } else {
+            await this.connector.db.collection(collection).deleteMany(selector);
+        }
     }
 
     /**
@@ -231,20 +237,5 @@ export default class DataServer extends Componentry.Module {
             if (!doc._createdBy) modifier.$setOnInsert._createdBy = account.userId;
             return modifier;
         }
-    }
-    /**
-     * Not in use yet... not tested
-     * @param col
-     * @param id
-     * @param user
-     * @returns {Promise<AggregationCursor<Document>>}
-     */
-    async trash(col,id,user='unknown') {
-        let result = await this.db.collection(col).aggregate([
-            {match:{_id:id}},
-            {project:{_user:user,o:"$ROOT",_created:new Date()}},
-            {$merge:{into:'trash',on:"_id"}}
-        ]);
-        return result;
     }
 }
