@@ -32,6 +32,9 @@ export default class Trash {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         })
+        /**
+         * Put item(s) into trash with PUT. This is not supported. Use DELETE /data/{id}
+         */
         router.put('/data/trash/:item?',async(req,res)=>{
             try {
                 res.status(400).json('{status:400,message:"illegal request}');
@@ -39,9 +42,23 @@ export default class Trash {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         });
-        router.delete('/data/trash/:ids',async(req,res)=>{
+        /**
+         * Restore item(s) from trash with POST
+         */
+        router.post('/data/trash/:item?',async(req,res)=>{
             try {
-                await this.empty('','',req.params.ids.split(','))
+                await this.restore(req.params.item)
+                res.status(204).json();
+            } catch(e) {
+                res.status(e.status||500).json({status:"error",message:e.message});
+            }
+        });
+        router.delete('/data/trash/:col?/:ids?',async(req,res)=>{
+            try {
+                if (!req.params.col) {
+                    if (!req.account.super) return res.status(401).send('empty all trash forbidden');
+                }
+                await this.empty(req.params.col,req.params.ids)
                 res.status(204).send();
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
@@ -73,22 +90,21 @@ export default class Trash {
      */
     async put(account,col,ids) {
         let now = new Date();
-        if (!Array.isArray(ids)) ids = [ids];
+        if (typeof ids === 'string') ids = ids.split(',');
         if (ids.length === 0) throw new Error("Empty data set");
         let body = typeof ids[0] === 'object' ? ids
-            :await this.connector.db.collection(col).find({_id:{$in:body}}).toArray() ;
+            :await this.connector.db.collection(col).find({_id:{$in:ids}}).toArray() ;
         let writes = [];
         let deleteIds = [];
         for (let o of body) {
             deleteIds.push(o._id);
-            writes.push({updateOne:{filter:{col:col,oid:body._id},update:{
-                $setOnInsert:{_id:col+'#'+o._id,_created:now,_createdBy:account.userId},
-                _modified:now,
-                o:o
+            writes.push({updateOne:{filter:{col:col,oid:o._id},update:{
+                $setOnInsert:{_id:col+'::'+o._id,_created:now,_createdBy:account.userId},
+                $set:{_modified:now, o:o}
             },upsert:true}});
         }
-        await this.trashCollection(col).bulkWrite(writes);
-        await this.connector.db.collection(col).deleteMany({_id:{$in:deleteIds}});
+        if (writes.length > 0) await this.trashCollection.bulkWrite(writes);
+        if (deleteIds.length > 0) await this.connector.db.collection(col).deleteMany({_id:{$in:deleteIds}});
     }
 
     /**
@@ -98,16 +114,17 @@ export default class Trash {
      * @returns {Promise<void>}
      */
     async restore(ids) {
-        if (!Array.isArray(body)) ids = [ids];
+        if (!ids) throw new Error("Empty data set");
+        if (!Array.isArray(ids)) ids = [ids];
         if (ids.length === 0) throw new Error("Empty data set");
         let body = await this.trashCollection.find({_id:{$in:ids}}).toArray();
         let writes = {};
         for (let item of body) {
-            if (!writes[item.oid]) writes[item.oid] = [];
-            writes[item.oid].push({insertOne:item.o});
+            if (!writes[item.col]) writes[item.col] = [];
+            writes[item.col].push({insertOne:item.o});
         }
         for (let col in writes) {
-            await this.connector.db.collection(col).bulkWrite(writes);
+            await this.connector.db.collection(col).bulkWrite(writes[col]);
         }
         await this.trashCollection.deleteMany({_id:{$in:ids}});
     }
@@ -119,7 +136,7 @@ export default class Trash {
      * @returns {Promise<void>}
      */
     async pluck(col, id, newId) {
-        let item = await this.trashCollection(col).findOne({_id:id});
+        let item = await this.trashCollection.findOne({_id:id});
         if (!item) throw new Error("Not found");
         await this.connector.db.collection(col).insertOne(item);
     }
@@ -135,8 +152,14 @@ export default class Trash {
     async empty(col,oid,_id) {
         let query = {};
         if (col) query.col = col;
-        if (oid) query.oid = oid;
-        if (_id) query._id = _id;
+        if (oid) {
+            if (!Array.isArray(oid)) oid = oid.split(',');
+            query.oid = {$in:oid};
+        }
+        if (_id) {
+            if (!Array.isArray(_id)) _id = _id.split(',');
+            query._id = {$in:_id};
+        }
         await this.trashCollection.deleteMany(query);
     }
 }

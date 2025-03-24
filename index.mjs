@@ -28,7 +28,7 @@ export default class DataServer extends Componentry.Module {
         return class DataServerOptions extends DataServer {
             constructor(connector) {
                 super(connector);
-                this.options = options;
+                Object.assign(this.options,options);
             }
         }
     }
@@ -38,8 +38,9 @@ export default class DataServer extends Componentry.Module {
         // If either include or exclude are defined, skip collections not implicitly or explicitly named
         if (this.options.include || this.options.exclude) {
             router.use('/data/:collection/:item?',async (req,res,next)=> {
-                if ((this.options.exclude?.includes(req.params.collection)) ||
-                    (!this.options.include?.includes(req.params.collection))) {
+                if (this.options.exclude && this.options.exclude.includes(req.params.collection)) {
+                    res.status(401).send();
+                } else if (this.options.include && this.options.include.includes(req.params.collection)) {
                     res.status(401).send();
                 } else next();
             })
@@ -47,12 +48,13 @@ export default class DataServer extends Componentry.Module {
         router.use('/data/:collection/:item?',async (req,res,next)=> {
             let level = 'read';
             if (req.method === 'PUT') level = 'write';
-            if (req.method === 'DELETE') level = this.options.safeDelete ? 'create' : 'owner';
+            if (req.method === 'DELETE') level = this.options.safeDelete ? 'write' : 'owner';
             let availableAccounts = await this.connector.acl.get[level]({user: req.account.userId}, 'account');
             req._availableAccounts = availableAccounts.map(a=>a._id.account);
             next();
         })
-        router.use(this.trash.routes());
+        // include trash handling
+        if (this.options.safeDelete) router.use(this.trash.routes());
         router.get('/data/account/:item?',async (req,res,next)=> {
             try {
                 let selector = {};
@@ -99,25 +101,22 @@ export default class DataServer extends Componentry.Module {
                     if (this.options.limit && results.length >= this.options.limit) break;
                     else results.push(record);
                 }
-                return (req.params.item?results[0]||{}:results);
+                res.send(req.params.item?results[0]||{}:results);
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         });
-        router.put('/data/:collection/:item?',async(req,res)=>{
+        router.all('/data/:collection/:item?',async(req,res)=>{
             try {
-                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
-                let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
-                res.json(result);
-            } catch(e) {
-                res.status(e.status||500).json({status:"error",message:e.message});
-            }
-        });
-        router.delete('/data/:collection/:ids',async(req,res)=>{
-            try {
-                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
-                await this.remove(req.account,req.params.collection,req.params.ids.split(','));
-                res.status(204).send();
+                if (req.method === 'PUT' || req.method === 'POST') {
+                    if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
+                    let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
+                    res.json(result);
+                } else if (req.method === 'DELETE') {
+                    if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
+                    await this.remove(req.account,req.params.collection,req.params.item);
+                    res.status(204).send();
+                }
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
@@ -167,7 +166,7 @@ export default class DataServer extends Componentry.Module {
      */
     async remove(account,collection,ids) {
         if (!ids) throw new Error('no id provided');
-        if (typeof ids === 'string') ids = [ids];
+        if (typeof ids === 'string') ids = ids.split(',');
         let selector = {_account:account.id,_id:{$in:ids}};
         if (this.options.safeDelete) {
             await this.trash.put(account, collection, ids)
