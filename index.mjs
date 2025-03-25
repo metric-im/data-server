@@ -20,7 +20,7 @@ import Trash from "./Trash.mjs";
 export default class DataServer extends Componentry.Module {
     constructor(connector) {
         super(connector,import.meta.url)
-        this.options = {safeDelete:false,exclude:["user"]};
+        this.options = {safeDelete:false,exclude:["user"],global:[]};
         this.parser = Parser;
         this.trash = new Trash(this.connector);
     }
@@ -35,61 +35,30 @@ export default class DataServer extends Componentry.Module {
 
     routes() {
         let router = express.Router();
-        // If either include or exclude are defined, skip collections not implicitly or explicitly named
-        if (this.options.include || this.options.exclude) {
-            router.use('/data/:collection/:item?',async (req,res,next)=> {
-                if (this.options.exclude && this.options.exclude.includes(req.params.collection)) {
-                    res.status(401).send();
-                } else if (this.options.include && this.options.include.includes(req.params.collection)) {
-                    res.status(401).send();
-                } else next();
-            })
-        }
+        // common access control
         router.use('/data/:collection/:item?',async (req,res,next)=> {
-            let level = 'read';
-            if (req.method === 'PUT') level = 'write';
-            if (req.method === 'DELETE') level = this.options.safeDelete ? 'write' : 'owner';
-            let availableAccounts = await this.connector.acl.get[level]({user: req.account.userId}, 'account');
-            req._availableAccounts = availableAccounts.map(a=>a._id.account);
-            next();
+            if (!this.options.global.includes(req.params.collection)) {
+                let level = 'read';
+                if (req.method === 'PUT') level = 'write';
+                if (req.method === 'DELETE') level = this.options.safeDelete ? 'write' : 'owner';
+                let availableAccounts = await this.connector.acl.get[level]({user: req.account.userId}, 'account');
+                availableAccounts = availableAccounts.map(a=>a._id.account);
+                req._baseSelector = req._baseSelector||{};
+                if (!req.account.super && !availableAccounts.includes(req.account.id)) return res.status(401).send();
+                req._baseSelector = Object.assign(req._baseSelector,{_account:req.account.id})
+            }
+            if (this.options.exclude && this.options.exclude.includes(req.params.collection)) {
+                res.status(401).send();
+            } else if (this.options.include && this.options.include.includes(req.params.collection)) {
+                res.status(401).send();
+            } else next();
         })
         // include trash handling
         if (this.options.safeDelete) router.use(this.trash.routes());
-        router.get('/data/account/:item?',async (req,res,next)=> {
-            try {
-                let selector = {};
-                if (req.params.item) {
-                    if (!req.account.super && !req._availableAccounts.includes(req.params.item)) return res.status(401).send();
-                    selector._id = req.params.item;
-                } else if (!req.account.super) {
-                    selector._id = {$in:req._availableAccounts};
-                }
-                if (req.query.where) Object.assign(selector,this.parser.objectify(req.query.where));
-                let sort = (req.query.sort)?this.parser.sortify(req.query.sort):{_id:1};
-                let results = await this.connector.db.collection(collection).find(selector).collation({ locale:"en_US", strength:2}).sort(sort).toArray();
-                return (req.params.item?results[0]||{}:results);
-            } catch(e) {
-                res.status(e.status||500).json({status:"error",message:e.message});
-            }
-        })
-        router.put('/data/account/:item?',async (req,res)=> {
-            try {
-                res.status(500).json({status:"error",message:"Not implemented. Use account server."});
-            } catch(e) {
-                res.status(e.status||500).json({status:"error",message:e.message});
-            }
-        })
-        router.delete('/data/account/:item?',async (req,res)=> {
-            try {
-                res.status(500).json({status:"error",message:"Not implemented. Use account server."});
-            } catch(e) {
-                res.status(e.status||500).json({status:"error",message:e.message});
-            }
-        })
+        // get collection item(s)
         router.get('/data/:collection/:item?',async(req,res)=>{
             try {
-                if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
-                let selector = {_account:req.account.id};
+                let selector = req._baseSelector;
                 if (req.params.item) selector._id = req.params.item;
                 if (req.query.where) Object.assign(selector,this.parser.objectify(req.query.where));
                 let sort = (req.query.sort)?this.parser.sortify(req.query.sort):{_id:1};
@@ -106,14 +75,13 @@ export default class DataServer extends Componentry.Module {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
         });
+        // put/delete collection item(s)
         router.all('/data/:collection/:item?',async(req,res)=>{
             try {
                 if (req.method === 'PUT' || req.method === 'POST') {
-                    if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
                     let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
                     res.json(result);
                 } else if (req.method === 'DELETE') {
-                    if (!req.account.super && !req._availableAccounts.includes(req.account.id)) return res.status(401).send();
                     await this.remove(req.account,req.params.collection,req.params.item);
                     res.status(204).send();
                 }
@@ -167,7 +135,7 @@ export default class DataServer extends Componentry.Module {
     async remove(account,collection,ids) {
         if (!ids) throw new Error('no id provided');
         if (typeof ids === 'string') ids = ids.split(',');
-        let selector = {_account:account.id,_id:{$in:ids}};
+        let selector = {_id:{$in:ids}};
         if (this.options.safeDelete) {
             await this.trash.put(account, collection, ids)
         } else {
@@ -194,35 +162,27 @@ export default class DataServer extends Componentry.Module {
         let accounts = await this.connector.acl.get.write({user:account.userId},"account");
         accounts = accounts.map(a=>a._id.account);
         if (account.super) accounts.push(account.id);
-        if (Array.isArray(body)) {
-            if (body.length === 0) throw new Error("Empty data set");
-            let writes = [];
-            for (let o of body) {
-                if (!o._account) o._account = account.id;
+        let returnNewDocument = true;
+        if (Array.isArray(body)) returnNewDocument = false;
+        else body = [body];
+        if (body.length === 0) throw new Error("Empty data set");
+        let writes = [];
+        for (let o of body) {
+            if (!this.options.global.includes(collection)) {
+                if (!o._account ) o._account = account.id;
                 else if (!accounts.includes(o._account)) continue;
-                writes.push({updateOne:{
-                    filter:{_id:(o._id||this.connector.idForge.datedId())},
-                    update:constructModifier(o),
-                    upsert:true
-                }});
             }
-            let result = await this.connector.db.collection(collection).bulkWrite(writes);
-            return {upsertedCount:result.upsertedCount,modifiedCount:result.modifiedCount};
+            writes.push({updateOne:{
+                filter:{_id:(o._id||this.connector.idForge.datedId())},
+                update:constructModifier(o),
+                upsert:true
+            }});
+        }
+        let result = await this.connector.db.collection(collection).bulkWrite(writes);
+        if (returnNewDocument && body[0]) {
+            return await this.connector.db.collection(collection).find(body[0]._id)
         } else {
-            let selector = {_id:body._id||id||this.connector.idForge.datedId()};
-            if (!body._account) body._account = account.id;
-            else if (!accounts.includes(body._account)) {
-                let error = new Error();
-                error.status = 401;
-                throw error;
-            }
-            let modifier = constructModifier(body);
-            let options = {upsert:true,returnNewDocument:true};
-            let result = await this.connector.db.collection(collection).findOneAndUpdate(selector,modifier,options);
-            if (!result.value && result.ok) {
-                result.value = await this.connector.db.collection(collection).findOne({_id:selector._id})
-            }
-            return result.value;
+            return {upsertedCount:result.upsertedCount,modifiedCount:result.modifiedCount};
         }
 
         function constructModifier(doc) {
