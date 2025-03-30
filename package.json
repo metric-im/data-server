@@ -1,6 +1,6 @@
 {
   "name": "@metric-im/data-server",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Generic database get, put, delete API",
   "main": "index.mjs",
   "scripts": {
