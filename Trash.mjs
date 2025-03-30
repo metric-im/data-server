@@ -2,10 +2,12 @@
  * Halfway house for lost objects
  */
 import express from 'express';
+import Parser from "./Parser.mjs";
 
 export default class Trash {
     constructor(connector) {
         this.connector = connector;
+        this.parser = Parser
         this.trashCollection = this.connector.db.collection('trash');
     }
 
@@ -15,19 +17,21 @@ export default class Trash {
      */
     routes() {
         let router = express.Router();
-        router.get('/data/trash/',async (req,res,next)=> {
+        router.get('/data/trash/:item?',async (req,res,next)=> {
             try {
                 let selector = {};
+                if (!req._availableAccounts) req._availableAccounts = []
                 if (req.params.item) {
-                    if (!req.account.super && !req._availableAccounts.includes(req.params.item)) return res.status(401).send();
+                    // if (!req.account.super && !req._availableAccounts.includes(req.params.item)) return res.status(401).send();
                     selector._id = req.params.item;
-                } else if (!req.account.super) {
+                } else if (!req.account.super && req._availableAccounts.length !== 0) {
                     selector._id = {$in:req._availableAccounts};
                 }
                 if (req.query.where) Object.assign(selector,this.parser.objectify(req.query.where));
                 let sort = (req.query.sort)?this.parser.sortify(req.query.sort):{_id:1};
-                let results = await this.connector.db.collection(collection).find(selector).collation({ locale:"en_US", strength:2}).sort(sort).toArray();
-                return (req.params.item?results[0]||{}:results);
+                let results = await this.trashCollection.find(selector).collation({ locale:"en_US", strength:2}).sort(sort).toArray();
+                const response = req.params.item?results[0]||{}:results;
+                res.status(200).json(response)
             } catch(e) {
                 res.status(e.status||500).json({status:"error",message:e.message});
             }
@@ -99,9 +103,9 @@ export default class Trash {
         for (let o of body) {
             deleteIds.push(o._id);
             writes.push({updateOne:{filter:{col:col,oid:o._id},update:{
-                $setOnInsert:{_id:col+'::'+o._id,_created:now,_createdBy:account.userId},
-                $set:{_modified:now, o:o}
-            },upsert:true}});
+                        $setOnInsert:{_id:col+'::'+o._id,_created:now,_createdBy:account.userId},
+                        $set:{_modified:now, o:o}
+                    },upsert:true}});
         }
         if (writes.length > 0) await this.trashCollection.bulkWrite(writes);
         if (deleteIds.length > 0) await this.connector.db.collection(col).deleteMany({_id:{$in:deleteIds}});

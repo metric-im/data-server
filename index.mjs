@@ -82,7 +82,12 @@ export default class DataServer extends Componentry.Module {
                     let result = await this.put(req.account,req.params.collection,req.body,req.params.item);
                     res.json(result);
                 } else if (req.method === 'DELETE') {
-                    await this.remove(req.account,req.params.collection,req.params.item);
+                    if (req.query?.conditions) {
+                        const conditions = this.parser.objectify(req.query.conditions)
+                        const usedBy = await this.checkConditions(req.params.collection,req.params.item,conditions)
+                        if (usedBy.length > 0) return res.status(423).json({message: 'Cannot be deleted', usedBy})
+                    }
+                    await this.remove(req.account, req.params.collection, req.params.item, this.makeBool(req.query?.safeDelete));
                     res.status(204).send();
                 }
             } catch(e) {
@@ -130,13 +135,14 @@ export default class DataServer extends Componentry.Module {
      *
      * @param account context.
      * @param collection the name of the collection in which the item is declared
-     * @param item item identifier
+     * @param ids
+     * @param safeDelete if it's true instead of deleting item will be kept in the trash
      */
-    async remove(account,collection,ids) {
+    async remove(account,collection,ids,safeDelete) {
         if (!ids) throw new Error('no id provided');
         if (typeof ids === 'string') ids = ids.split(',');
         let selector = {_id:{$in:ids}};
-        if (this.options.safeDelete) {
+        if (safeDelete) {
             await this.trash.put(account, collection, ids)
         } else {
             await this.connector.db.collection(collection).deleteMany(selector);
@@ -173,10 +179,10 @@ export default class DataServer extends Componentry.Module {
                 else if (!accounts.includes(o._account)) continue;
             }
             writes.push({updateOne:{
-                filter:{_id:(o._id||this.connector.idForge.datedId())},
-                update:constructModifier(o),
-                upsert:true
-            }});
+                    filter:{_id:(o._id||this.connector.idForge.datedId())},
+                    update:constructModifier(o),
+                    upsert:true
+                }});
         }
         let result = await this.connector.db.collection(collection).bulkWrite(writes);
         if (returnNewDocument && body[0]) {
@@ -196,5 +202,21 @@ export default class DataServer extends Componentry.Module {
             if (!doc._createdBy) modifier.$setOnInsert._createdBy = account.userId;
             return modifier;
         }
+    }
+
+    async checkConditions(collection,ids,conditions) {
+        if (!Array.isArray(ids)) ids = [ids]
+        if (!Array.isArray(conditions)) conditions = [conditions]
+        const usedBy = []
+        for (const condition of conditions) {
+            const results = await this.connector.db.collection(condition.col)
+                .find({[condition.field]: {$in: ids}}).toArray()
+            if (results.length > 0) usedBy.push({collection: condition.col, ids: results.map(item => item._id)})
+        }
+        return usedBy
+    }
+
+    makeBool(val) {
+        return [true, 'true', 'True', 1, '1'].includes(val)
     }
 }
