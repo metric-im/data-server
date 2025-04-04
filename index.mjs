@@ -87,6 +87,9 @@ export default class DataServer extends Componentry.Module {
                         const usedBy = await this.checkConditions(req.params.collection,req.params.item,conditions)
                         if (usedBy.length > 0) return res.status(423).json({message: 'Cannot be deleted', usedBy})
                     }
+                    if (await this.isDeployed(req.params.collection,req.params.item)) {
+                        return res.status(400).json({message: 'This item has been deployed and can\'t be deleted'})
+                    }
                     await this.remove(req.account, req.params.collection, req.params.item, this.makeBool(req.query?.safeDelete));
                     res.status(204).send();
                 }
@@ -142,11 +145,11 @@ export default class DataServer extends Componentry.Module {
         if (!ids) throw new Error('no id provided');
         if (typeof ids === 'string') ids = ids.split(',');
         let selector = {_id:{$in:ids}};
-        if (safeDelete) {
-            await this.trash.put(account, collection, ids)
-        } else {
-            await this.connector.db.collection(collection).deleteMany(selector);
-        }
+        // if (safeDelete) {
+        //     await this.trash.put(account, collection, ids)
+        // } else {
+        //     await this.connector.db.collection(collection).deleteMany(selector);
+        // }
     }
 
     /**
@@ -214,6 +217,13 @@ export default class DataServer extends Componentry.Module {
             if (results.length > 0) usedBy.push({collection: condition.col, ids: results.map(item => item._id)})
         }
         return usedBy
+    }
+
+    async isDeployed(collection, id) {
+        const item = await this.connector.db.collection(collection)
+            .findOne({_id: id})
+        if (!item?.attributes) item.attributes = []
+        return item.attributes.some(attr => attr.name === 'deployed' && this.makeBool(attr.value))
     }
 
     makeBool(val) {
