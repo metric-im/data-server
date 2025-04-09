@@ -30,6 +30,10 @@ export default class DataServer extends Componentry.Module {
                 super(connector);
                 Object.assign(this.options,options);
             }
+            static get name() {
+                // bit of a hack, but the module needs to be named for the root class
+                return "DataServer"
+            }
         }
     }
 
