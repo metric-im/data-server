@@ -190,7 +190,10 @@ export default class DataServer extends Componentry.Module {
         }
         let result = await this.connector.db.collection(collection).bulkWrite(writes);
         if (returnNewDocument && body[0]) {
-            return await this.connector.db.collection(collection).find(body[0]._id)
+            const results = await this.connector.db.collection(collection)
+                .find({_id: body[0]._id}).toArray();
+            return results[0];
+        }
         } else {
             return {upsertedCount:result.upsertedCount,modifiedCount:result.modifiedCount};
         }
